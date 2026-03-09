@@ -1,0 +1,10 @@
+.env
+*.user
+bin/
+obj/
+node_modules/
+dist/
+.angular/
+*.suo
+.DS_Store
+postgres-data/
