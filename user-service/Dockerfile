@@ -3,11 +3,16 @@ WORKDIR /src
 COPY user-service.csproj .
 RUN dotnet restore
 COPY . .
-RUN dotnet publish -c Release -o /app/publish
-
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
+RUN dotnet publish -c Release -o /app/publish --no-restore
+ 
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=build /app/publish .
 EXPOSE 8080
+ENV ASPNETCORE_HTTP_PORTS=8080
+ENV ASPNETCORE_ENVIRONMENT=Production
+COPY --from=build /app/publish .
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget -qO- http://localhost:8080/api/users/health || exit 1
 ENTRYPOINT ["dotnet", "user-service.dll"]
+ 

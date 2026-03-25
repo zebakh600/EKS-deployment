@@ -1,0 +1,6 @@
+output "cluster_name"     { value = module.eks.cluster_name }
+output "cluster_endpoint" { value = module.eks.cluster_endpoint }
+output "vpc_id"           { value = module.vpc.vpc_id }
+output "account_id"       { value = data.aws_caller_identity.current.account_id }
+output "alb_role_arn"     { value = module.alb_irsa.iam_role_arn }
+output "ecr_base"         { value = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/devops-quiz" }

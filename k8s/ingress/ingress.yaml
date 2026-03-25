@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: main-ingress
+  namespace: devops-quiz
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # HTTPS + HTTP → HTTPS redirect
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # Wildcard cert ARN from: cd terraform/persistent && terraform output acm_cert_arn
+    # Same cert your ECS Fargate project also uses — already validated, free to reuse
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:ACCOUNT_ID:certificate/YOUR_CERT_ID"
+    alb.ingress.kubernetes.io/healthcheck-path: /api/auth/health
+    alb.ingress.kubernetes.io/tags: "Environment=production,Project=devops-quiz"
+spec:
+  rules:
+  # Subdomain — quiz.YOUR_DOMAIN.xyz
+  # Covered by wildcard cert *.YOUR_DOMAIN.xyz automatically
+  - host: eks.zeba.click
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service: { name: frontend-svc, port: { number: 80 } }
+      - path: /api/auth
+        pathType: Prefix
+        backend:
+          service: { name: auth-service, port: { number: 8080 } }
+      - path: /api/quiz
+        pathType: Prefix
+        backend:
+          service: { name: quiz-service, port: { number: 8080 } }
+      - path: /api/users
+        pathType: Prefix
+        backend:
+          service: { name: user-service, port: { number: 8080 } }
