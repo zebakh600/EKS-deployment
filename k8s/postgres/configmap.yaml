@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: devops-quiz
+data:
+  # Reference your SQL files — mounted into postgres init dir
+  # These are loaded from the postgres-init/ folder via a separate job
+  # See statefulset.yaml for volume mount
+  POSTGRES_DB: devopsquiz
+  POSTGRES_USER: quizuser

@@ -1,0 +1,184 @@
+version: '3.9'
+
+# ============================================================
+# DevOps Quiz Platform - Docker Compose
+# Microservices: frontend | auth-service | quiz-service | user-service | postgres
+# Monitoring-ready: /metrics endpoints on all .NET services (Prometheus-compatible)
+# ============================================================
+
+networks:
+  quiz-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+    driver: local
+
+services:
+
+  # ──────────────────────────────────────────────
+  # DATABASE
+  # ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: devopsquiz-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: devopsquiz
+      POSTGRES_USER: quizuser
+      POSTGRES_PASSWORD: quizpass
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./postgres-init/02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - quiz-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quizuser -d devopsquiz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ──────────────────────────────────────────────
+  # AUTH SERVICE (.NET 8)
+  # Handles: Register, Login, JWT token issuance
+  # Metrics: GET /metrics (Prometheus-ready)
+  # Swagger: GET /swagger
+  # ──────────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: devopsquiz-auth
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "Host=postgres;Port=5432;Database=devopsquiz;Username=quizuser;Password=quizpass"
+      JWT_SECRET: "devops-quiz-super-secret-jwt-key-change-in-production-2024!"
+      ASPNETCORE_ENVIRONMENT: Production
+      # BUG FIX: Use ASPNETCORE_HTTP_PORTS for .NET 8 (ASPNETCORE_URLS still works but this is preferred)
+      ASPNETCORE_HTTP_PORTS: "8080"
+    ports:
+      - "5001:8080"
+    networks:
+      - quiz-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/auth/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  # ──────────────────────────────────────────────
+  # QUIZ SERVICE (.NET 8)
+  # Handles: Topics, Sessions, Questions, Leaderboard, Progress
+  # Metrics: GET /metrics (Prometheus-ready)
+  # Swagger: GET /swagger
+  # ──────────────────────────────────────────────
+  quiz-service:
+    build:
+      context: ./quiz-service
+      dockerfile: Dockerfile
+    container_name: devopsquiz-quiz
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "Host=postgres;Port=5432;Database=devopsquiz;Username=quizuser;Password=quizpass"
+      JWT_SECRET: "devops-quiz-super-secret-jwt-key-change-in-production-2024!"
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+    ports:
+      - "5002:8080"
+    networks:
+      - quiz-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/quiz/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  # ──────────────────────────────────────────────
+  # USER SERVICE (.NET 8)
+  # Handles: User profiles, avatar updates
+  # Metrics: GET /metrics (Prometheus-ready)
+  # Swagger: GET /swagger
+  # ──────────────────────────────────────────────
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: devopsquiz-user
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "Host=postgres;Port=5432;Database=devopsquiz;Username=quizuser;Password=quizpass"
+      JWT_SECRET: "devops-quiz-super-secret-jwt-key-change-in-production-2024!"
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+    ports:
+      - "5003:8080"
+    networks:
+      - quiz-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/users/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  # ──────────────────────────────────────────────
+  # FRONTEND (Angular 19 + Nginx)
+  # Serves SPA + proxies API calls to backend services
+  # BUG FIX: Removed service_healthy condition - backends have longer cold start
+  # Nginx will retry proxy connections automatically
+  # ──────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: devopsquiz-frontend
+    restart: unless-stopped
+    ports:
+      - "4200:80"
+    networks:
+      - quiz-network
+    depends_on:
+      - auth-service
+      - quiz-service
+      - user-service
+
+  # ──────────────────────────────────────────────
+  # FUTURE: Uncomment to enable monitoring stack
+  # All .NET services already expose /metrics in Prometheus format
+  # ──────────────────────────────────────────────
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: devopsquiz-prometheus
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+  #   ports:
+  #     - "9090:9090"
+  #   networks:
+  #     - quiz-network
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: devopsquiz-grafana
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #   ports:
+  #     - "3000:3000"
+  #   networks:
+  #     - quiz-network
+  #   depends_on:
+  #     - prometheus

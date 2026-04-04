@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devops-quiz
+  labels: { app: devops-quiz-platform }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring

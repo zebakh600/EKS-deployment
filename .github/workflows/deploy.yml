@@ -1,0 +1,158 @@
+name: Deploy DevOps Quiz Platform to EKS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # manual trigger from GitHub UI
+
+env:
+  AWS_REGION:   ap-south-1
+  CLUSTER_NAME: devops-quiz-eks
+  ECR_BASE:     329668418627.dkr.ecr.ap-south-1.amazonaws.com/devops-quiz
+  NAMESPACE:    devops-quiz
+
+jobs:
+  # ── JOB 1: Build all 4 Docker images and push to ECR ─────────────────────
+  build:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    outputs:
+      # Pass image URIs (with git SHA tag) to the deploy job
+      auth_image:     ${{ steps.auth.outputs.image }}
+      quiz_image:     ${{ steps.quiz.outputs.image }}
+      user_image:     ${{ steps.user.outputs.image }}
+      frontend_image: ${{ steps.fe.outputs.image }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build all 4 images. Each step:
+      #   1. Builds with the git SHA as the tag (unique, traceable)
+      #   2. Also tags as :latest (so kubectl uses latest on fresh deploys)
+      #   3. Pushes both tags
+      #   4. Outputs the SHA-tagged URI for the deploy job
+
+      - name: Build + push auth-service
+        id: auth
+        run: |
+          IMG=${{ env.ECR_BASE }}/auth-service:${{ github.sha }}
+          docker build -t $IMG -t ${{ env.ECR_BASE }}/auth-service:latest ./auth-service
+          docker push ${{ env.ECR_BASE }}/auth-service:${{ github.sha }}
+          docker push ${{ env.ECR_BASE }}/auth-service:latest
+          echo "image=$IMG" >> $GITHUB_OUTPUT
+
+      - name: Build + push quiz-service
+        id: quiz
+        run: |
+          IMG=${{ env.ECR_BASE }}/quiz-service:${{ github.sha }}
+          docker build -t $IMG -t ${{ env.ECR_BASE }}/quiz-service:latest ./quiz-service
+          docker push ${{ env.ECR_BASE }}/quiz-service:${{ github.sha }}
+          docker push ${{ env.ECR_BASE }}/quiz-service:latest
+          echo "image=$IMG" >> $GITHUB_OUTPUT
+
+      - name: Build + push user-service
+        id: user
+        run: |
+          IMG=${{ env.ECR_BASE }}/user-service:${{ github.sha }}
+          docker build -t $IMG -t ${{ env.ECR_BASE }}/user-service:latest ./user-service
+          docker push ${{ env.ECR_BASE }}/user-service:${{ github.sha }}
+          docker push ${{ env.ECR_BASE }}/user-service:latest
+          echo "image=$IMG" >> $GITHUB_OUTPUT
+
+      - name: Build + push frontend
+        id: fe
+        run: |
+          IMG=${{ env.ECR_BASE }}/frontend:${{ github.sha }}
+          docker build -t $IMG -t ${{ env.ECR_BASE }}/frontend:latest ./frontend
+          docker push ${{ env.ECR_BASE }}/frontend:${{ github.sha }}
+          docker push ${{ env.ECR_BASE }}/frontend:latest
+          echo "image=$IMG" >> $GITHUB_OUTPUT
+
+  # ── JOB 2: Rolling deploy to EKS ─────────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build   # only runs after all 4 images are pushed
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.30.0'   # matches your cluster version
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+      - name: Apply manifests if not already deployed
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/secrets/ 2>/dev/null || true
+          kubectl apply -f k8s/auth-service/
+          kubectl apply -f k8s/quiz-service/
+          kubectl apply -f k8s/user-service/
+          kubectl apply -f k8s/frontend/
+      # kubectl set image does a rolling update — Kubernetes replaces pods one
+      # at a time with zero downtime. Uses the SHA-tagged image from job 1.
+      - name: Rolling deploy — all 4 services
+        run: |
+          kubectl set image deployment/auth-service \
+            auth-service=${{ needs.build.outputs.auth_image }} \
+            -n ${{ env.NAMESPACE }}
+
+          kubectl set image deployment/quiz-service \
+            quiz-service=${{ needs.build.outputs.quiz_image }} \
+            -n ${{ env.NAMESPACE }}
+
+          kubectl set image deployment/user-service \
+            user-service=${{ needs.build.outputs.user_image }} \
+            -n ${{ env.NAMESPACE }}
+
+          kubectl set image deployment/frontend \
+            frontend=${{ needs.build.outputs.frontend_image }} \
+            -n ${{ env.NAMESPACE }}
+
+      # Wait for each rollout to complete before marking the pipeline green.
+      # If a new pod crashes (CrashLoopBackOff), rollout status detects it
+      # and the pipeline fails — giving you automatic rollback signal.
+      - name: Wait for rollouts to complete
+        run: |
+          kubectl rollout status deployment/auth-service \
+            -n ${{ env.NAMESPACE }} --timeout=180s
+
+          kubectl rollout status deployment/quiz-service \
+            -n ${{ env.NAMESPACE }} --timeout=180s
+
+          kubectl rollout status deployment/user-service \
+            -n ${{ env.NAMESPACE }} --timeout=180s
+
+          kubectl rollout status deployment/frontend \
+            -n ${{ env.NAMESPACE }} --timeout=180s
+
+      - name: Verify all pods running
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "Live at: https://eks.zeba.click"
